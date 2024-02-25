@@ -1,12 +1,11 @@
 #[cfg(feature = "sqlite")]
 pub mod sqlite {
     use std::{sync::Arc, collections::HashMap};
-    use axum_sessions::async_session::{SessionStore, Session, self};
     use debug_ignore::DebugIgnore;
-    use sqlite::ConnectionWithFullMutex;
+    use sqlite_::ConnectionWithFullMutex;
+    use sqlite_::State::{Row, Done};
     use itertools::intersperse;
-    use tokio::task::spawn_blocking;
-    use crate::{persistence_adapter::{PersistenceAdapter, PersistenceSpec, PersistenceType, PersistenceData, StoreError}, session_persistence_spec::SessionPersistenceSpec};
+    use crate::{persistence_adapter::{PersistenceAdapter, PersistenceSpec, PersistenceType, PersistenceData, StoreError}};
 
     // used for specifying how sqlite should be used to store data
     #[derive(Debug, Clone)]
@@ -65,7 +64,7 @@ pub mod sqlite {
             let mut state = prepared_query.next();
             while let Ok(s) = state {
                 match s {
-                    sqlite::State::Row => {
+                    Row => {
                         for column in prepared_query.column_names().iter() {
                             let column_info = Spec::fields().iter().filter(|f|f.get_name().eq(column)).next().expect("Unknown table field");
                             match column_info {
@@ -78,7 +77,7 @@ pub mod sqlite {
                             }
                         }
                     }
-                    sqlite::State::Done => break,
+                    Done => break,
                 }
                 state = prepared_query.next();
             }
@@ -170,7 +169,7 @@ pub mod sqlite {
 
             'read_lines: while let Ok(s) = statement.next() {
                 match s {
-                    sqlite::State::Row => return true,
+                    sqlite_::State::Row => return true,
                     _ => break 'read_lines
                 }
             }
@@ -185,54 +184,6 @@ pub mod sqlite {
             command.push_str(&self.table_name);
             let _ = self.connection.execute(command);
             println!("Clear");
-        }
-    }
-
-    impl SessionStore for SqlitePersistence {
-        fn load_session<'life0,'async_trait>(&'life0 self, cookie_id:String) ->  ::core::pin::Pin<Box<dyn ::core::future::Future<Output = async_session::Result<Option<Session> > > + ::core::marker::Send+'async_trait> >where 'life0:'async_trait, Self:'async_trait {
-                Box::pin(async{
-                    let persistence = self.clone();
-                    let x = spawn_blocking(move ||{
-                    println!("Loading {cookie_id}");
-                    let cookie = cookie_id;
-                    let result = Ok(PersistenceAdapter::<String, Session, SessionPersistenceSpec>::load(&persistence, &cookie));
-                        println!("Loaded");
-                        result
-                    });
-                    x.await?
-                })
-        }
-
-        fn store_session<'life0,'async_trait>(&'life0 self,session:Session) ->  ::core::pin::Pin<Box<dyn ::core::future::Future<Output = async_session::Result<Option<String> > > + ::core::marker::Send+'async_trait> >where 'life0:'async_trait,Self:'async_trait {
-                Box::pin(async{
-                    let persistence = self.clone();
-                    spawn_blocking(move || {
-
-                    let session_id = session.id().to_string();
-                    let _ = PersistenceAdapter::<String, Session, SessionPersistenceSpec>::store(&persistence, session_id.clone(), session)?;
-                    println!("Stored session: {session_id}");
-                    Ok(Some(session_id))
-                
-                }).await?})
-            }
-
-        fn destroy_session<'life0,'async_trait>(&'life0 self,session:Session) ->  ::core::pin::Pin<Box<dyn ::core::future::Future<Output = async_session::Result> + ::core::marker::Send+'async_trait> >where 'life0:'async_trait,Self:'async_trait {
-                Box::pin(async{
-                    let persistence = self.clone();
-                    spawn_blocking(move ||{
-                    let session = session;
-                    PersistenceAdapter::<String, Session, SessionPersistenceSpec>::delete(&persistence, session.id().to_string()).ok_or(async_session::Error::new(StoreError{message: "Unable to delete session".to_string()}))
-                }).await?})
-            }
-
-        fn clear_store<'life0,'async_trait>(&'life0 self) ->  ::core::pin::Pin<Box<dyn ::core::future::Future<Output = async_session::Result> + ::core::marker::Send+'async_trait> >where 'life0:'async_trait,Self:'async_trait {
-                Box::pin(
-                    async{
-                        let persistence = self.clone();
-                        spawn_blocking(move || {
-                        Ok(PersistenceAdapter::<String, Session, SessionPersistenceSpec>::clear(&persistence))
-                    }).await?}
-                )
         }
     }
 }

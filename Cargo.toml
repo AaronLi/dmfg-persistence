@@ -6,7 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+debug-ignore = {version = "1.0.5", optional = true}
+sqlite_ = {package="sqlite", version = "0.31.1", optional = true}
+tokio = {version = "1.36.0", features=["rt"], optional = true}
+itertools = {version = "0.12.1", optional = true}
+
 
 [features]
 default = []
-sqlite = []
+sqlite = ["dep:debug-ignore", "dep:sqlite_", "dep:tokio", "dep:itertools"]
