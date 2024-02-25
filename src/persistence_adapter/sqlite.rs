@@ -1,6 +1,6 @@
 use std::{sync::Arc, collections::HashMap};
 use debug_ignore::DebugIgnore;
-use sqlite_::ConnectionWithFullMutex;
+use sqlite_::{ConnectionWithFullMutex, Statement};
 use sqlite_::State::{Row, Done};
 use itertools::intersperse;
 use crate::persistence_adapter::{PersistenceAdapter, PersistenceSpec, PersistenceType, PersistenceData, StoreError};
@@ -12,10 +12,32 @@ pub struct SqlitePersistence {
     table_name: String
 }
 
-impl SqlitePersistence {
+impl SqlitePersistence{
     pub fn new(connection: Arc<ConnectionWithFullMutex>, table_name: &str) -> Self {
         SqlitePersistence { connection: DebugIgnore(connection), table_name: table_name.to_string() }
     }
+}
+
+impl SqlitePersistence {
+    fn collect_fields(spec_types: &'static [PersistenceType], prepared_query: &Statement) -> HashMap<String, PersistenceData>{
+        let mut data_out = HashMap::new();
+
+        for column in prepared_query.column_names().iter() {
+            let column_info = spec_types.iter().filter(|f|f.get_name().eq(column)).next().expect("Unknown table field");
+            match column_info {
+                PersistenceType::String(n) => {data_out.insert(n.to_string(), PersistenceData::String(prepared_query.read(column.as_str()).expect("Invalid column")));},
+                PersistenceType::Bytes(n) => {data_out.insert(n.to_string(), PersistenceData::Bytes(prepared_query.read(column.as_str()).expect("Invalid column")));},
+                PersistenceType::Integer(n) => {data_out.insert(n.to_string(), PersistenceData::Integer(prepared_query.read(column.as_str()).expect("Invalid column")));},
+                PersistenceType::UnsignedInteger(n) => {data_out.insert(n.to_string(), PersistenceData::UnsignedInteger(prepared_query.read::<i64, &str>(column.as_str()).expect("Invalid column") as u64));},
+                PersistenceType::Float(n) =>{data_out.insert(n.to_string(), PersistenceData::Float(prepared_query.read::<f64, &str>(column.as_str()).expect("Invalid column") as f32));},
+                PersistenceType::Double(n) => {data_out.insert(n.to_string(), PersistenceData::Double(prepared_query.read(column.as_str()).expect("Invalid column")));},
+            }
+        }
+
+        data_out
+    }
+
+    
 }
 
 impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, Spec> for SqlitePersistence {
@@ -58,28 +80,12 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
             PersistenceData::Double(d) => {prepared_query.bind((":primary_key", d)).ok()?},
         };
 
-        let mut data_out = HashMap::new();
-        let mut state = prepared_query.next();
-        while let Ok(s) = state {
+        prepared_query.next().ok().and_then(|s|{
             match s {
-                Row => {
-                    for column in prepared_query.column_names().iter() {
-                        let column_info = Spec::fields().iter().filter(|f|f.get_name().eq(column)).next().expect("Unknown table field");
-                        match column_info {
-                            PersistenceType::String(n) => {data_out.insert(n.to_string(), PersistenceData::String(prepared_query.read(column.as_str()).expect("Invalid column")));},
-                            PersistenceType::Bytes(n) => {data_out.insert(n.to_string(), PersistenceData::Bytes(prepared_query.read(column.as_str()).expect("Invalid column")));},
-                            PersistenceType::Integer(n) => {data_out.insert(n.to_string(), PersistenceData::Integer(prepared_query.read(column.as_str()).expect("Invalid column")));},
-                            PersistenceType::UnsignedInteger(n) => {data_out.insert(n.to_string(), PersistenceData::UnsignedInteger(prepared_query.read::<i64, &str>(column.as_str()).expect("Invalid column") as u64));},
-                            PersistenceType::Float(n) =>{data_out.insert(n.to_string(), PersistenceData::Float(prepared_query.read::<f64, &str>(column.as_str()).expect("Invalid column") as f32));},
-                            PersistenceType::Double(n) => {data_out.insert(n.to_string(), PersistenceData::Double(prepared_query.read(column.as_str()).expect("Invalid column")));},
-                        }
-                    }
-                }
-                Done => break,
+                Row => Spec::deserialize_data(SqlitePersistence::collect_fields(Spec::fields(), &prepared_query)),
+                Done => None
             }
-            state = prepared_query.next();
-        }
-        Spec::deserialize_data(data_out)
+        })
     }
 
     fn store(&self, key: Key, data: Data) -> Result<(), crate::persistence_adapter::StoreError> {
@@ -182,5 +188,31 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
         command.push_str(&self.table_name);
         let _ = self.connection.execute(command);
         println!("Clear");
+    }
+
+    fn scan(&self, start: usize, limit: Option<usize>) -> Vec<Data> {
+        let mut command = String::new();
+        command.push_str(&format!("SELECT * FROM \"{}\" ORDER BY \"{}\" LIMIT {} OFFSET {}", &self.table_name, Spec::key_field(), limit.map(|l|l as isize).unwrap_or(-1), start));
+
+        let mut prepared_query = self.connection.prepare(command).unwrap();
+        let mut rows_out = Vec::new();
+
+        let mut state = prepared_query.next();
+        while let Ok(s) = state {
+            match s {
+                Row => {
+                    match Spec::deserialize_data(SqlitePersistence::collect_fields(Spec::fields(),  &prepared_query)) {
+                        Some(entry) => rows_out.push(entry),
+                        None => {}
+                    }
+                },
+                Done => {
+                    break;
+                }
+            }
+            state = prepared_query.next();
+        }
+
+        rows_out
     }
 }

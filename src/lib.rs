@@ -3,7 +3,7 @@
 pub mod persistence_adapter {
     #[cfg(feature = "sqlite")]
     pub mod sqlite;
-    
+
     use std::{collections::HashMap, fmt::Display};
 
     // Used for specifying data and how it should be stored
@@ -98,6 +98,7 @@ pub mod persistence_adapter {
         fn store(&self, key: Key, data: Data) -> Result<(), StoreError>;
         fn contains(&self, key: &Key) -> bool;
         fn clear(&self);
+        fn scan(&self, start: usize, limit: Option<usize>) -> Vec<Data>;
     }
 }
 
