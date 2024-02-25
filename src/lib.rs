@@ -1,7 +1,7 @@
 
 
 pub mod persistence_adapter {
-    pub mod sqlite_persistence;
+    pub mod sqlite;
     use std::{collections::HashMap, fmt::Display};
 
     // Used for specifying data and how it should be stored
