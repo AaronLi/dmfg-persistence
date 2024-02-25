@@ -190,7 +190,7 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
         println!("Clear");
     }
 
-    fn scan(&self, start: usize, limit: Option<usize>) -> Vec<Data> {
+    fn scan(&self, start: usize, limit: Option<usize>) -> Vec<(Key, Data)> {
         let mut command = String::new();
         command.push_str(&format!("SELECT * FROM \"{}\" ORDER BY \"{}\" LIMIT {} OFFSET {}", &self.table_name, Spec::key_field(), limit.map(|l|l as isize).unwrap_or(-1), start));
 
@@ -201,8 +201,10 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
         while let Ok(s) = state {
             match s {
                 Row => {
-                    match Spec::deserialize_data(SqlitePersistence::collect_fields(Spec::fields(),  &prepared_query)) {
-                        Some(entry) => rows_out.push(entry),
+                    let fields = SqlitePersistence::collect_fields(Spec::fields(),  &prepared_query);
+                    let key = Spec::deserialize_key(fields.get(Spec::key_field()).expect("Key field not present")).expect("Invalid key found while deserializing");
+                    match Spec::deserialize_data(fields) {
+                        Some(entry) => rows_out.push((key, entry)),
                         None => {}
                     }
                 },
@@ -261,7 +263,7 @@ mod tests{
 
         assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::load(&persistence, &("test".to_string())), Some(x.clone()));
 
-        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![x]);
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![("test".to_string(), x)]);
 
         assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::delete(&persistence, "test".to_string()).is_some());
 

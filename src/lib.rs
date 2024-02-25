@@ -106,6 +106,7 @@ pub mod persistence_adapter {
         fn fields()-> &'static [PersistenceType]; // all fields that should be present, including the primary key
         fn key_field() -> &'static str;
         fn serialize_key(key: &Key) -> PersistenceData;
+        fn deserialize_key(key: &PersistenceData) -> Option<Key>;
         fn serialize_data(data: &Data) -> Option<HashMap<&'static str, PersistenceData>>;
         fn deserialize_data(data: HashMap<String, PersistenceData>) -> Option<Data>;
     }
@@ -119,7 +120,7 @@ pub mod persistence_adapter {
         fn store(&self, key: Key, data: Data) -> Result<(), StoreError>;
         fn contains(&self, key: &Key) -> bool;
         fn clear(&self);
-        fn scan(&self, start: usize, limit: Option<usize>) -> Vec<Data>;
+        fn scan(&self, start: usize, limit: Option<usize>) -> Vec<(Key, Data)>;
     }
 }
 
@@ -189,5 +190,13 @@ pub(crate) mod tests{
                 }
             )
         }
+
+        fn deserialize_key(key: &PersistenceData) -> Option<String> {
+            if let PersistenceData::String(s) = key {
+                Some(s.clone())
+            }else{
+                None
+            }
+         }
     }
 }
