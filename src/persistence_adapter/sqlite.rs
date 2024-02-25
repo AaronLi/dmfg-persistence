@@ -130,9 +130,9 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
 
         command.push_str("DELETE FROM ");
         command.push_str(&self.table_name);
-        command.push_str("WHERE ");
+        command.push_str(" WHERE \"");
         command.push_str(Spec::key_field());
-        command.push_str("=?");
+        command.push_str("\"=?");
 
         let mut statement = self.connection.prepare(command).expect("Invalid command");
         let _ = match Spec::serialize_key(&key) {
@@ -214,5 +214,59 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
         }
 
         rows_out
+    }
+}
+
+#[cfg(test)]
+mod tests{
+    use tempdir::TempDir;
+    use sqlite_::Connection;
+    use std::sync::Arc;
+    use rand::{thread_rng, Rng};
+    use rand::distributions::Alphanumeric;
+    use crate::persistence_adapter::sqlite::SqlitePersistence;
+    use crate::tests::AllSupportedTypes;
+    use crate::persistence_adapter::PersistenceAdapter;
+    use crate::tests::AllSupportedTypesPersistenceSpec;
+
+
+    #[tokio::test]
+    async fn test_sql_deserialize(){
+        let temp_dir = TempDir::new("sqlite_test").expect("Failed to create tempdir");
+
+        let temp_db_name = temp_dir.path().join("test.sqlite");
+
+        let db_connection = Connection::open_with_full_mutex(temp_db_name).expect("Failed to open temp db");
+
+        let persistence = SqlitePersistence::new(Arc::new(db_connection), "test_table");
+
+        PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::initialize(&persistence);
+
+        PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::clear(&persistence);
+
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None).len(), 0);
+
+        let x = AllSupportedTypes{
+            string: thread_rng().sample_iter(&Alphanumeric).take(64).map(char::from).collect(),
+            bytes: thread_rng().gen_iter::<u8>().take(64).collect(),
+            integer: thread_rng().gen::<i64>(),
+            unsigned_integer: thread_rng().gen::<u64>(),
+            float: thread_rng().gen::<f32>(),
+            double: thread_rng().gen::<f64>()
+        };
+
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::store(&persistence, "test".to_string(), x.clone()).is_ok());
+
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::contains(&persistence, &("test".to_string())));
+
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::load(&persistence, &("test".to_string())), Some(x.clone()));
+
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![x]);
+
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::delete(&persistence, "test".to_string()).is_some());
+
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![]);
+
+        assert!(!PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::contains(&persistence, &("test".to_string())));
     }
 }
