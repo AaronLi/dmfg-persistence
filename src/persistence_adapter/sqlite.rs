@@ -1,10 +1,9 @@
-#[cfg(feature = "sqlite")]
 use std::{sync::Arc, collections::HashMap};
 use debug_ignore::DebugIgnore;
 use sqlite_::ConnectionWithFullMutex;
 use sqlite_::State::{Row, Done};
 use itertools::intersperse;
-use crate::{persistence_adapter::{PersistenceAdapter, PersistenceSpec, PersistenceType, PersistenceData, StoreError}};
+use crate::persistence_adapter::{PersistenceAdapter, PersistenceSpec, PersistenceType, PersistenceData, StoreError};
 
 // used for specifying how sqlite should be used to store data
 #[derive(Debug, Clone)]
@@ -185,4 +184,3 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
         println!("Clear");
     }
 }
-
