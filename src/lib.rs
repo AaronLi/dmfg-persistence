@@ -121,6 +121,7 @@ pub mod persistence_adapter {
         fn contains(&self, key: &Key) -> bool;
         fn clear(&self);
         fn scan(&self, start: usize, limit: Option<usize>) -> Vec<(Key, Data)>;
+        fn update(&self, key: &Key, data: Data) -> Result<(), StoreError>;
     }
 
     pub trait PersistenceAdapterQueryable<Key, Data, Spec: PersistenceSpec<Key, Data>> {

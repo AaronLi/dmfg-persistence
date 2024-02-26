@@ -249,6 +249,45 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
 
         rows_out
     }
+    
+    fn update(&self, key: &Key, data: Data) -> Result<(), StoreError> {
+        let mut command = String::new();
+        command.push_str("UPDATE ");
+        command.push_str(&self.table_name.as_str());
+        command.push_str(" SET ");
+        intersperse(Spec::fields().iter().map(PersistenceType::get_name).filter(|x|x!=&Spec::key_field()).map(|name|format!("{} = ?", name)), ", ".to_string()).for_each(|s|command.push_str(&s));
+        command.push_str(format!(" WHERE {} = :key", Spec::key_field()).as_str());
+
+        println!("Executing {}", command);
+        if let Some(serialized) = Spec::serialize_data(&data) {
+            let mut statement = self.connection.prepare(command).expect("Invalid statement");
+            let _ = match Spec::serialize_key(key) {
+                PersistenceData::String(s) => statement.bind((":key", s.as_str())),
+                PersistenceData::Bytes(b) => statement.bind((":key", b.as_slice())),
+                PersistenceData::Integer(i) => statement.bind((":key", i)),
+                PersistenceData::UnsignedInteger(u) => statement.bind((":key", u as i64)),
+                PersistenceData::Float(f) => statement.bind((":key", f as f64)),
+                PersistenceData::Double(d) => statement.bind((":key", d)),
+            };
+            Spec::fields().iter().filter(|v|v.get_name()!=Spec::key_field()).enumerate().for_each(|(field_index, v)|{
+                let field_index = field_index + 1;
+                let field_name = v.get_name();
+                let _ = match serialized.get(field_name).expect("Missing serialized field") {
+                    PersistenceData::String(s) => statement.bind((field_index, s.as_str())),
+                    PersistenceData::Bytes(b) => statement.bind((field_index, &b[..])),
+                    PersistenceData::Integer(i) =>   statement.bind((field_index, *i)),
+                    PersistenceData::UnsignedInteger(u) => statement.bind((field_index, *u as i64)),
+                    PersistenceData::Float(f) => statement.bind((field_index, *f as f64)),
+                    PersistenceData::Double(d) => statement.bind((field_index, *d)),
+                };
+            });
+            let _ = statement.next().map_err(|e|StoreError{message: format!("{e:?}")})?;
+            println!("Stored");
+            Ok(())
+        }else{
+            Err(StoreError{ message: "Failed to serialize data".to_string()})
+        }
+    }
 }
 
 impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapterQueryable<Key, Data, Spec> for SqlitePersistence {
@@ -354,6 +393,12 @@ mod tests{
         assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![("test".to_string(), x.clone()), ("test1".to_string(), y.clone())]);
 
         assert_eq!(PersistenceAdapterQueryable::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::query(&persistence, Query::GreaterThan("float".to_string(), PersistenceData::Float(0.0)), 0, None), vec![("test1".to_string(), y.clone())]);
+
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::update(&persistence, &"test1".to_string(), x.clone()).is_ok());
+
+        assert_eq!(PersistenceAdapterQueryable::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::query(&persistence, Query::GreaterThan("float".to_string(), PersistenceData::Float(0.0)), 0, None), vec![]);
+
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::update(&persistence, &"test1".to_string(), y.clone()).is_ok());
 
         assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::delete(&persistence, "test".to_string()).is_some());
 
