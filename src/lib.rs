@@ -4,7 +4,7 @@ pub mod persistence_adapter {
     #[cfg(feature = "sqlite")]
     pub mod sqlite;
 
-    use std::{collections::HashMap, fmt::Display};
+    use std::{collections::HashMap, fmt::Display, rc::Rc};
 
     // Used for specifying data and how it should be stored
     #[allow(dead_code)]
@@ -30,7 +30,7 @@ pub mod persistence_adapter {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum PersistenceData{
         String(String),
         Bytes(Vec<u8>),
@@ -122,6 +122,32 @@ pub mod persistence_adapter {
         fn clear(&self);
         fn scan(&self, start: usize, limit: Option<usize>) -> Vec<(Key, Data)>;
     }
+
+    pub trait PersistenceAdapterQueryable<Key, Data, Spec: PersistenceSpec<Key, Data>> {
+        fn query(&self, query: Query, start: usize, limit: Option<usize>) -> Vec<(Key, Data)>;
+    }
+
+    #[derive(Clone)]
+    pub enum Query {
+        Or(Rc<Query>, Rc<Query>),
+        And(Rc<Query>, Rc<Query>),
+        Not(Rc<Query>),
+        Equals(String, PersistenceData),
+        GreaterThan(String, PersistenceData),
+        LessThan(String, PersistenceData)
+    }
+
+    impl Query {
+        fn or(a: Self, b: Self) -> Self {
+            Query::Or(Rc::new(a), Rc::new(b))
+        }
+        fn and(a: Self, b: Self) -> Self {
+            Query::And(Rc::new(a), Rc::new(b))
+        }
+        fn not(a: Self) -> Self {
+            Query::Not(Rc::new(a))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -198,5 +224,37 @@ pub(crate) mod tests{
                 None
             }
          }
+    }
+
+    #[test]
+    fn test_all_supported_types_eq() {
+        let a = AllSupportedTypes{
+            string: "ABCDEFGHIJKLMNOPQRSTUVWXYZ✔️".to_string(),
+            bytes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255],
+            integer: i64::MAX,
+            unsigned_integer: u64::MAX,
+            float: 0.0,
+            double: f64::MAX
+        };
+
+        let b = AllSupportedTypes{
+            string: "ABCDEFGHIJKLMNOPQRSTUVWXYZ✔️".to_string(),
+            bytes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255],
+            integer: i64::MAX,
+            unsigned_integer: u64::MAX,
+            float: 0.0,
+            double: f64::MAX
+        };
+
+        let c = AllSupportedTypes{
+            string: "ABCEFGHIJKLMNOPQRSTUVWXYZ✔️".to_string(), // D removed
+            bytes: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255],
+            integer: i64::MAX,
+            unsigned_integer: u64::MAX,
+            float: 0.0,
+            double: f64::MAX
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 }

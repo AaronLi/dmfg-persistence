@@ -3,7 +3,9 @@ use debug_ignore::DebugIgnore;
 use sqlite_::{ConnectionWithFullMutex, Statement};
 use sqlite_::State::{Row, Done};
 use itertools::intersperse;
-use crate::persistence_adapter::{PersistenceAdapter, PersistenceSpec, PersistenceType, PersistenceData, StoreError};
+use crate::persistence_adapter::{PersistenceAdapter, PersistenceAdapterQueryable, PersistenceSpec, PersistenceType, PersistenceData, StoreError};
+
+use super::Query;
 
 // used for specifying how sqlite should be used to store data
 #[derive(Debug, Clone)]
@@ -37,7 +39,36 @@ impl SqlitePersistence {
         data_out
     }
 
-    
+    fn generate_filter(query: &Query, start_index: usize, mut values: Vec<PersistenceData>) -> (String, usize, Vec<PersistenceData>) {
+        match query {
+            Query::Or(a, b) => {
+                let (statement_a, index_end_a, values) = SqlitePersistence::generate_filter(a, start_index, values);
+                let (statement_b, index_end_b, values) = SqlitePersistence::generate_filter(b, index_end_a, values);
+                (format!("( {} OR {} )", statement_a, statement_b), index_end_b, values)
+            },
+            Query::And(a, b) => {
+                let (statement_a, index_end_a, values) = SqlitePersistence::generate_filter(a, start_index, values);
+                let (statement_b, index_end_b, values) = SqlitePersistence::generate_filter(b, index_end_a, values);
+                (format!("( {} AND {} )", statement_a, statement_b), index_end_b, values)
+            },
+            Query::Not(a) => {
+                let (statement_a, index_end_a, values) = SqlitePersistence::generate_filter(a, start_index, values);
+                (format!("( NOT {} )", statement_a), index_end_a, values)
+            },
+            Query::Equals(a, b) => {
+                values.push(b.clone());
+                (format!(" \"{}\"=? ", a), start_index+1, values)
+            },
+            Query::GreaterThan(a, b) => {
+                values.push(b.clone());
+                (format!(" \"{}\">? ", a), start_index+1, values)
+            },
+            Query::LessThan(a, b) => {
+                values.push(b.clone());
+                (format!(" \"{}\"<? ", a), start_index+1, values)
+            },
+        }
+    }
 }
 
 impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, Spec> for SqlitePersistence {
@@ -219,6 +250,47 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
     }
 }
 
+impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapterQueryable<Key, Data, Spec> for SqlitePersistence {
+    fn query(&self, query: Query, start: usize, limit: Option<usize>) -> Vec<(Key, Data)> {
+        let mut command = String::new();
+        let (query_string, _num_placeholders, placeholder_values)  = SqlitePersistence::generate_filter(&query, 0, Vec::new());
+        command.push_str(&format!("SELECT * FROM \"{}\" WHERE {} ORDER BY {} LIMIT {} OFFSET {};", &self.table_name, query_string, Spec::key_field(), limit.map(|l|l as isize).unwrap_or(-1), start, ));
+        let mut prepared_query = self.connection.prepare(command).unwrap();
+        for (i, value) in placeholder_values.iter().enumerate() {
+            let bind_field = i+1;
+            match value {
+                PersistenceData::String(s) => prepared_query.bind((bind_field, s.as_str())),
+                PersistenceData::Bytes(b) => prepared_query.bind((bind_field, &b[..])),
+                PersistenceData::Integer(i_v) => prepared_query.bind((bind_field, *i_v)),
+                PersistenceData::UnsignedInteger(u) => prepared_query.bind((bind_field, *u as i64)),
+                PersistenceData::Float(f) => prepared_query.bind((bind_field, *f as f64)),
+                PersistenceData::Double(d) => prepared_query.bind((bind_field, *d)),
+            }.expect("Failed to bind data");
+        }
+
+        let mut rows_out = Vec::new();
+
+        let mut state = prepared_query.next();
+        while let Ok(s) = state {
+            match s {
+                Row => {
+                    let fields = SqlitePersistence::collect_fields(Spec::fields(),  &prepared_query);
+                    let key = Spec::deserialize_key(fields.get(Spec::key_field()).expect("Key field not present")).expect("Invalid key found while deserializing");
+                    match Spec::deserialize_data(fields) {
+                        Some(entry) => rows_out.push((key, entry)),
+                        None => {}
+                    }
+                },
+                Done => {
+                    break;
+                }
+            }
+            state = prepared_query.next();
+        }
+
+        rows_out
+    }
+}
 #[cfg(test)]
 mod tests{
     use tempdir::TempDir;
@@ -228,7 +300,7 @@ mod tests{
     use rand::distributions::Alphanumeric;
     use crate::persistence_adapter::sqlite::SqlitePersistence;
     use crate::tests::AllSupportedTypes;
-    use crate::persistence_adapter::PersistenceAdapter;
+    use crate::persistence_adapter::{PersistenceAdapter, PersistenceAdapterQueryable, PersistenceData, Query};
     use crate::tests::AllSupportedTypesPersistenceSpec;
 
 
@@ -252,8 +324,17 @@ mod tests{
             string: thread_rng().sample_iter(&Alphanumeric).take(64).map(char::from).collect(),
             bytes: thread_rng().gen_iter::<u8>().take(64).collect(),
             integer: thread_rng().gen::<i64>(),
-            unsigned_integer: thread_rng().gen::<u64>(),
-            float: thread_rng().gen::<f32>(),
+            unsigned_integer: thread_rng().gen::<u32>() as u64,
+            float: 0.0,
+            double: thread_rng().gen::<f64>()
+        };
+
+        let y = AllSupportedTypes{
+            string: thread_rng().sample_iter(&Alphanumeric).take(64).map(char::from).collect(),
+            bytes: thread_rng().gen_iter::<u8>().take(64).collect(),
+            integer: thread_rng().gen::<i64>(),
+            unsigned_integer: thread_rng().gen::<u32>() as u64,
+            float: 1.0,
             double: thread_rng().gen::<f64>()
         };
 
@@ -263,12 +344,35 @@ mod tests{
 
         assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::load(&persistence, &("test".to_string())), Some(x.clone()));
 
-        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![("test".to_string(), x)]);
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![("test".to_string(), x.clone())]);
+
+        assert_eq!(PersistenceAdapterQueryable::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::query(&persistence, Query::Equals("key".to_string(), PersistenceData::String("test".to_string())), 0, None), vec![("test".to_string(), x.clone())]);
+
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::store(&persistence, "test1".to_string(), y.clone()).is_ok());
+
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![("test".to_string(), x.clone()), ("test1".to_string(), y.clone())]);
+
+        assert_eq!(PersistenceAdapterQueryable::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::query(&persistence, Query::GreaterThan("float".to_string(), PersistenceData::Float(0.0)), 0, None), vec![("test1".to_string(), y.clone())]);
 
         assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::delete(&persistence, "test".to_string()).is_some());
 
-        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![]);
+        assert_eq!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::scan(&persistence, 0, None), vec![("test1".to_string(), y)]);
 
         assert!(!PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::contains(&persistence, &("test".to_string())));
+    }
+
+    #[test]
+    fn test_generate_query() {
+        let filter = Query::and(
+            Query::or(
+                Query::not(
+                    Query::Equals("integer".to_string(), PersistenceData::Integer(10))
+                ),
+                Query::Equals("unsigned_integer".to_string(), PersistenceData::UnsignedInteger(10))
+            ),
+            Query::Equals("string".to_string(), PersistenceData::String("hello!".to_string()))
+        );
+
+        println!("{:?}", SqlitePersistence::generate_filter(&filter, 0, Vec::new()));
     }
 }
