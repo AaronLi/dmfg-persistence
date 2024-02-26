@@ -85,7 +85,8 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
                 PersistenceType::Float(name)   |  PersistenceType::Double(name) => format!("{name} REAL"),
             }
         }), ", ".to_string()).for_each(|s|command.push_str(&s));
-        command.push_str(");");
+        command.push_str(format!(", PRIMARY KEY ({}) );", Spec::key_field()).as_str());
+        println!("{}", command);
         self.connection.execute(command).ok()
     }
 

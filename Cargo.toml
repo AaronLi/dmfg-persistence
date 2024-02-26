@@ -17,5 +17,6 @@ tempdir = "0.3.7"
 
 
 [features]
+all = ["default", "sqlite"]
 default = []
 sqlite = ["dep:debug-ignore", "dep:sqlite_", "dep:tokio", "dep:itertools"]
