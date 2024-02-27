@@ -250,12 +250,15 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
         rows_out
     }
     
-    fn update(&self, key: &Key, data: Data) -> Result<(), StoreError> {
+    fn update(&self, key: &Key, data: Data, only_update: Option<&[&str]>) -> Result<(), StoreError> {
         let mut command = String::new();
         command.push_str("UPDATE ");
         command.push_str(&self.table_name.as_str());
         command.push_str(" SET ");
-        intersperse(Spec::fields().iter().map(PersistenceType::get_name).filter(|x|x!=&Spec::key_field()).map(|name|format!("{} = ?", name)), ", ".to_string()).for_each(|s|command.push_str(&s));
+        match only_update{
+            Some(k) => intersperse(k.iter().filter(|x|*x!=&Spec::key_field()).map(|name|format!("{} = ?", name)), ", ".to_string()).for_each(|s|command.push_str(&s)),
+            None => intersperse(Spec::fields().iter().map(PersistenceType::get_name).filter(|x|x!=&Spec::key_field()).map(|name|format!("{} = ?", name)), ", ".to_string()).for_each(|s|command.push_str(&s)),
+        }
         command.push_str(format!(" WHERE {} = :key", Spec::key_field()).as_str());
 
         println!("Executing {}", command);
@@ -269,7 +272,7 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
                 PersistenceData::Float(f) => statement.bind((":key", f as f64)),
                 PersistenceData::Double(d) => statement.bind((":key", d)),
             };
-            Spec::fields().iter().filter(|v|v.get_name()!=Spec::key_field()).enumerate().for_each(|(field_index, v)|{
+            let bind_fields = |(field_index, v): (usize, &PersistenceType)|{
                 let field_index = field_index + 1;
                 let field_name = v.get_name();
                 let _ = match serialized.get(field_name).expect("Missing serialized field") {
@@ -280,7 +283,11 @@ impl<Key, Data, Spec: PersistenceSpec<Key, Data>> PersistenceAdapter<Key, Data, 
                     PersistenceData::Float(f) => statement.bind((field_index, *f as f64)),
                     PersistenceData::Double(d) => statement.bind((field_index, *d)),
                 };
-            });
+            };
+            match only_update {
+                Some(f) => Spec::fields().iter().filter(|v|f.contains(&v.get_name())).enumerate().for_each(bind_fields),
+                None => Spec::fields().iter().filter(|v|v.get_name()!=Spec::key_field()).enumerate().for_each(bind_fields),
+            }
             let _ = statement.next().map_err(|e|StoreError{message: format!("{e:?}")})?;
             println!("Stored");
             Ok(())
@@ -394,11 +401,11 @@ mod tests{
 
         assert_eq!(PersistenceAdapterQueryable::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::query(&persistence, Query::GreaterThan("float".to_string(), PersistenceData::Float(0.0)), 0, None), vec![("test1".to_string(), y.clone())]);
 
-        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::update(&persistence, &"test1".to_string(), x.clone()).is_ok());
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::update(&persistence, &"test1".to_string(), x.clone(), Some(&vec!["float"])).is_ok());
 
         assert_eq!(PersistenceAdapterQueryable::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::query(&persistence, Query::GreaterThan("float".to_string(), PersistenceData::Float(0.0)), 0, None), vec![]);
 
-        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::update(&persistence, &"test1".to_string(), y.clone()).is_ok());
+        assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::update(&persistence, &"test1".to_string(), y.clone(), None).is_ok());
 
         assert!(PersistenceAdapter::<String, AllSupportedTypes, AllSupportedTypesPersistenceSpec>::delete(&persistence, "test".to_string()).is_some());
 
